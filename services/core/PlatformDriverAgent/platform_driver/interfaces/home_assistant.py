@@ -199,6 +199,58 @@ class Interface(BasicRevert, BaseInterface):
                 _log.error(error_msg)
                 raise ValueError(error_msg)
 
+        # Fan device support
+        elif "fan." in register.entity_id:
+            if entity_point == "state":
+                # Control fan on/off
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    if register.value == 1:
+                        self.turn_on_fan(register.entity_id)
+                    elif register.value == 0:
+                        self.turn_off_fan(register.entity_id)
+                else:
+                    error_msg = f"State value for {register.entity_id} should be 0 (off) or 1 (on)"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            
+            elif entity_point == "percentage":
+                # Control fan speed (0-100%)
+                if isinstance(register.value, (int, float)) and 0 <= register.value <= 100:
+                    self.set_fan_percentage(register.entity_id, int(register.value))
+                else:
+                    error_msg = f"Percentage value for {register.entity_id} should be between 0-100"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            
+            else:
+                error_msg = f"Fan devices support 'state' and 'percentage' attributes only"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+
+        # Lawn mower device support
+        elif "lawn_mower." in register.entity_id:
+            if entity_point == "activity":
+                # Control lawn mower activity
+                # activity values: mowing=1, docked=0, paused=2, returning=3, error=4
+                if isinstance(register.value, int) and register.value in [0, 1, 2, 3]:
+                    if register.value == 1:
+                        self.start_mowing(register.entity_id)
+                    elif register.value == 0:
+                        self.dock_lawn_mower(register.entity_id)
+                    elif register.value == 2:
+                        self.pause_lawn_mower(register.entity_id)
+                    elif register.value == 3:
+                        # Returning is a state, not a command, so we use dock
+                        self.dock_lawn_mower(register.entity_id)
+                else:
+                    error_msg = f"Activity value for {register.entity_id} should be 0 (dock), 1 (start mowing), 2 (pause), or 3 (return/dock)"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                error_msg = f"Lawn mower devices currently support 'activity' attribute only"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+
         else:
             error_msg = f"Unsupported entity_id: {register.entity_id}. " \
                         f"Currently set_point is supported only for thermostats and lights"
@@ -291,6 +343,64 @@ class Interface(BasicRevert, BaseInterface):
                             result[register.point_name] = state
                     else:
                         # Handle other lock attributes if needed
+                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+                        register.value = attribute
+                        result[register.point_name] = attribute
+
+                # handling fan states
+                elif "fan." in entity_id:
+                    if entity_point == "state":
+                        state = entity_data.get("state", None)
+                        # Converting fan states to numbers
+                        if state == "on":
+                            register.value = 1
+                            result[register.point_name] = 1
+                        elif state == "off":
+                            register.value = 0
+                            result[register.point_name] = 0
+                        else:
+                            _log.warning(f"Unknown fan state '{state}' for {entity_id}")
+                            register.value = state
+                            result[register.point_name] = state
+                    elif entity_point == "percentage":
+                        # Get fan speed percentage
+                        percentage = entity_data.get("attributes", {}).get("percentage", 0)
+                        register.value = percentage
+                        result[register.point_name] = percentage
+                    else:
+                        # Other fan attributes
+                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+                        register.value = attribute
+                        result[register.point_name] = attribute
+                
+                # handling lawn mower activities
+                elif "lawn_mower." in entity_id:
+                    if entity_point == "activity":
+                        activity = entity_data.get("state", None)
+                        # Convert lawn mower activities to numbers
+                        # mowing=1, docked=0, paused=2, returning=3, error=4
+                        if activity == "mowing":
+                            register.value = 1
+                            result[register.point_name] = 1
+                        elif activity == "docked":
+                            register.value = 0
+                            result[register.point_name] = 0
+                        elif activity == "paused":
+                            register.value = 2
+                            result[register.point_name] = 2
+                        elif activity == "returning":
+                            register.value = 3
+                            result[register.point_name] = 3
+                        elif activity == "error":
+                            register.value = 4
+                            result[register.point_name] = 4
+                            _log.error(f"Lawn mower {entity_id} is in error state")
+                        else:
+                            _log.warning(f"Unknown lawn mower activity '{activity}' for {entity_id}")
+                            register.value = activity
+                            result[register.point_name] = activity
+                    else:
+                        # Other lawn mower attributes
                         attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
                         register.value = attribute
                         result[register.point_name] = attribute
@@ -471,3 +581,88 @@ class Interface(BasicRevert, BaseInterface):
             "entity_id": entity_id
         }
         _post_method(url, headers, payload, f"unlock {entity_id}")
+
+    def turn_on_fan(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/fan/turn_on"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"turn on {entity_id}")
+
+    def turn_off_fan(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/fan/turn_off"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"turn off {entity_id}")
+
+    def set_fan_percentage(self, entity_id, percentage):
+        url = f"http://{self.ip_address}:{self.port}/api/services/fan/set_percentage"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id,
+            "percentage": percentage
+        }
+        _post_method(url, headers, payload, f"set {entity_id} speed to {percentage}%")
+
+    def start_mowing(self, entity_id):
+        """
+        Start or resume the mowing task.
+        
+        Args:
+            entity_id (str): The entity ID of the lawn mower (e.g., "lawn_mower.front_yard")
+        """
+        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/start_mowing"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"start mowing {entity_id}")
+
+    def dock_lawn_mower(self, entity_id):
+        """
+        Stop the lawn mower and return to dock.
+        
+        Args:
+            entity_id (str): The entity ID of the lawn mower
+        """
+        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/dock"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"dock {entity_id}")
+
+    def pause_lawn_mower(self, entity_id):
+        """
+        Pause the lawn mower during current operation.
+        
+        Args:
+            entity_id (str): The entity ID of the lawn mower
+        """
+        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/pause"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"pause {entity_id}")
