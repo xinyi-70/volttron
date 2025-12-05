@@ -42,6 +42,28 @@ type_mapping = {"string": str,
                 "bool": bool,
                 "boolean": bool}
 
+# Device state constants - eliminates magic numbers
+class DeviceState:
+    """Constants for device states"""
+    OFF = 0
+    ON = 1
+    UNLOCKED = 0
+    LOCKED = 1
+
+class ThermostatMode:
+    """Constants for thermostat modes"""
+    OFF = 0
+    HEAT = 2
+    COOL = 3
+    AUTO = 4
+
+class LawnMowerActivity:
+    """Constants for lawn mower activities"""
+    DOCKED = 0
+    MOWING = 1
+    PAUSED = 2
+    RETURNING = 3
+    ERROR = 4
 
 class HomeAssistantRegister(BaseRegister):
     def __init__(self, read_only, pointName, units, reg_type, attributes, entity_id, entity_point, default_value=None,
@@ -98,6 +120,38 @@ class Interface(BasicRevert, BaseInterface):
 
         self.parse_config(registry_config_str)
 
+    def _get_headers(self):
+        """
+        Get standard headers for Home Assistant API requests.
+        
+        Returns:
+            dict: Headers with authorization and content type
+        """
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def _call_service(self, domain, service, entity_id, extra_data=None):
+        """
+        Generic method to call Home Assistant services.
+        Eliminates code duplication across all device control methods.
+        
+        Args:
+            domain (str): Service domain (e.g., 'light', 'lock', 'fan')
+            service (str): Service name (e.g., 'turn_on', 'lock', 'set_percentage')
+            entity_id (str): The entity ID to control
+            extra_data (dict, optional): Additional data to include in payload
+        """
+        url = f"http://{self.ip_address}:{self.port}/api/services/{domain}/{service}"
+        headers = self._get_headers()
+        payload = {"entity_id": entity_id}
+        
+        if extra_data:
+            payload.update(extra_data)
+        
+        _post_method(url, headers, payload, f"{service} {entity_id}")
+
     def get_point(self, point_name):
         register = self.get_register_by_name(point_name)
 
@@ -119,10 +173,10 @@ class Interface(BasicRevert, BaseInterface):
         # Changing lights values in home assistant based off of register value.
         if "light." in register.entity_id:
             if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
+                if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                    if register.value == DeviceState.ON:
                         self.turn_on_lights(register.entity_id)
-                    elif register.value == 0:
+                    elif register.value == DeviceState.OFF:
                         self.turn_off_lights(register.entity_id)
                 else:
                     error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
@@ -143,10 +197,10 @@ class Interface(BasicRevert, BaseInterface):
 
         elif "input_boolean." in register.entity_id:
             if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
+                if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                    if register.value == DeviceState.ON:
                         self.set_input_boolean(register.entity_id, "on")
-                    elif register.value == 0:
+                    elif register.value == DeviceState.OFF:
                         self.set_input_boolean(register.entity_id, "off")
                 else:
                     error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
@@ -158,14 +212,15 @@ class Interface(BasicRevert, BaseInterface):
         # Changing thermostat values.
         elif "climate." in register.entity_id:
             if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 2, 3, 4]:
-                    if register.value == 0:
+                if isinstance(register.value, int) and register.value in [ThermostatMode.OFF, ThermostatMode.HEAT, 
+                                                           ThermostatMode.COOL, ThermostatMode.AUTO]:
+                    if register.value == ThermostatMode.OFF:
                         self.change_thermostat_mode(entity_id=register.entity_id, mode="off")
-                    elif register.value == 2:
+                    elif register.value == ThermostatMode.HEAT:
                         self.change_thermostat_mode(entity_id=register.entity_id, mode="heat")
-                    elif register.value == 3:
+                    elif register.value == ThermostatMode.COOL:
                         self.change_thermostat_mode(entity_id=register.entity_id, mode="cool")
-                    elif register.value == 4:
+                    elif register.value == ThermostatMode.AUTO:
                         self.change_thermostat_mode(entity_id=register.entity_id, mode="auto")
                 else:
                     error_msg = f"Climate state should be an integer value of 0, 2, 3, or 4"
@@ -183,10 +238,10 @@ class Interface(BasicRevert, BaseInterface):
         elif "lock." in register.entity_id:
             if entity_point == "state":
                 # Validate that value is 0 (unlock) or 1 (lock)
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
+                if isinstance(register.value, int) and register.value in [DeviceState.UNLOCKED, DeviceState.LOCKED]:
+                    if register.value == DeviceState.LOCKED:
                         self.lock_device(register.entity_id)
-                    elif register.value == 0:
+                    elif register.value == DeviceState.UNLOCKED:
                         self.unlock_device(register.entity_id)
                 else:
                     error_msg = f"State value for {register.entity_id} should be an integer: " \
@@ -203,10 +258,10 @@ class Interface(BasicRevert, BaseInterface):
         elif "fan." in register.entity_id:
             if entity_point == "state":
                 # Control fan on/off
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
+                if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                    if register.value == DeviceState.ON:
                         self.turn_on_fan(register.entity_id)
-                    elif register.value == 0:
+                    elif register.value == DeviceState.OFF:
                         self.turn_off_fan(register.entity_id)
                 else:
                     error_msg = f"State value for {register.entity_id} should be 0 (off) or 1 (on)"
@@ -231,19 +286,22 @@ class Interface(BasicRevert, BaseInterface):
         elif "lawn_mower." in register.entity_id:
             if entity_point == "activity":
                 # Control lawn mower activity
-                # activity values: mowing=1, docked=0, paused=2, returning=3, error=4
-                if isinstance(register.value, int) and register.value in [0, 1, 2, 3]:
-                    if register.value == 1:
+                valid_activities = [LawnMowerActivity.DOCKED, LawnMowerActivity.MOWING, 
+                                   LawnMowerActivity.PAUSED, LawnMowerActivity.RETURNING]
+                if isinstance(register.value, int) and register.value in valid_activities:
+                    if register.value == LawnMowerActivity.MOWING:
                         self.start_mowing(register.entity_id)
-                    elif register.value == 0:
+                    elif register.value == LawnMowerActivity.DOCKED:
                         self.dock_lawn_mower(register.entity_id)
-                    elif register.value == 2:
+                    elif register.value == LawnMowerActivity.PAUSED:
                         self.pause_lawn_mower(register.entity_id)
-                    elif register.value == 3:
+                    elif register.value == LawnMowerActivity.RETURNING:
                         # Returning is a state, not a command, so we use dock
                         self.dock_lawn_mower(register.entity_id)
                 else:
-                    error_msg = f"Activity value for {register.entity_id} should be 0 (dock), 1 (start mowing), 2 (pause), or 3 (return/dock)"
+                    error_msg = f"Activity value for {register.entity_id} should be " \
+                                f"{LawnMowerActivity.DOCKED} (dock), {LawnMowerActivity.MOWING} (mowing), " \
+                                f"{LawnMowerActivity.PAUSED} (pause), or {LawnMowerActivity.RETURNING} (return)"
                     _log.error(error_msg)
                     raise ValueError(error_msg)
             else:
@@ -459,210 +517,70 @@ class Interface(BasicRevert, BaseInterface):
             self.insert_register(register)
 
     def turn_off_lights(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_off"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id,
-        }
-        _post_method(url, headers, payload, f"turn off {entity_id}")
+        """Turn off the specified light."""
+        self._call_service("light", "turn_off", entity_id)
 
     def turn_on_lights(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
-        }
-
-        payload = {
-            "entity_id": f"{entity_id}"
-        }
-        _post_method(url, headers, payload, f"turn on {entity_id}")
-
-    def change_thermostat_mode(self, entity_id, mode):
-        # Check if enttiy_id startswith climate.
-        if not entity_id.startswith("climate."):
-            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
-            return
-        # Build header
-        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_hvac_mode"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "content-type": "application/json",
-        }
-        # Build data
-        data = {
-            "entity_id": entity_id,
-            "hvac_mode": mode,
-        }
-        # Post data
-        _post_method(url, headers, data, f"change mode of {entity_id} to {mode}")
-
-    def set_thermostat_temperature(self, entity_id, temperature):
-        # Check if the provided entity_id starts with "climate."
-        if not entity_id.startswith("climate."):
-            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
-            return
-
-        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_temperature"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "content-type": "application/json",
-        }
-
-        if self.units == "C":
-            converted_temp = round((temperature - 32) * 5/9, 1)
-            _log.info(f"Converted temperature {converted_temp}")
-            data = {
-                "entity_id": entity_id,
-                "temperature": converted_temp,
-            }
-        else:
-            data = {
-                "entity_id": entity_id,
-                "temperature": temperature,
-            }
-        _post_method(url, headers, data, f"set temperature of {entity_id} to {temperature}")
+        """Turn on the specified light."""
+        self._call_service("light", "turn_on", entity_id)
 
     def change_brightness(self, entity_id, value):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
-        }
-        # ranges from 0 - 255
-        payload = {
-            "entity_id": f"{entity_id}",
-            "brightness": value,
-        }
+        """Change brightness of the light (0-255)."""
+        self._call_service("light", "turn_on", entity_id, {"brightness": value})
 
-        _post_method(url, headers, payload, f"set brightness of {entity_id} to {value}")
+    def change_thermostat_mode(self, entity_id, mode):
+        """Change thermostat HVAC mode."""
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+        self._call_service("climate", "set_hvac_mode", entity_id, {"hvac_mode": mode})
+
+    def set_thermostat_temperature(self, entity_id, temperature):
+        """Set thermostat temperature."""
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+        
+        # Convert temperature if needed
+        if self.units == "C":
+            temperature = round((temperature - 32) * 5/9, 1)
+            _log.info(f"Converted temperature to {temperature}C")
+        
+        self._call_service("climate", "set_temperature", entity_id, {"temperature": temperature})
 
     def set_input_boolean(self, entity_id, state):
+        """Set input boolean state."""
         service = 'turn_on' if state == 'on' else 'turn_off'
-        url = f"http://{self.ip_address}:{self.port}/api/services/input_boolean/{service}"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "entity_id": entity_id
-        }
-
-        response = requests.post(url, headers=headers, json=payload)
-
-        # Optionally check for a successful response
-        if response.status_code == 200:
-            print(f"Successfully set {entity_id} to {state}")
-        else:
-            print(f"Failed to set {entity_id} to {state}: {response.text}")
+        self._call_service("input_boolean", service, entity_id)
     
     def lock_device(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/lock/lock"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"lock {entity_id}")
+        """Lock the specified lock device."""
+        self._call_service("lock", "lock", entity_id)
 
     def unlock_device(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/lock/unlock"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"unlock {entity_id}")
+        """Unlock the specified lock device."""
+        self._call_service("lock", "unlock", entity_id)
 
     def turn_on_fan(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/fan/turn_on"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"turn on {entity_id}")
+        """Turn on the specified fan device."""
+        self._call_service("fan", "turn_on", entity_id)
 
     def turn_off_fan(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/fan/turn_off"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"turn off {entity_id}")
+        """Turn off the specified fan device."""
+        self._call_service("fan", "turn_off", entity_id)
 
     def set_fan_percentage(self, entity_id, percentage):
-        url = f"http://{self.ip_address}:{self.port}/api/services/fan/set_percentage"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id,
-            "percentage": percentage
-        }
-        _post_method(url, headers, payload, f"set {entity_id} speed to {percentage}%")
+        """Set the speed percentage of the fan (0-100%)."""
+        self._call_service("fan", "set_percentage", entity_id, {"percentage": percentage})
 
     def start_mowing(self, entity_id):
-        """
-        Start or resume the mowing task.
-        
-        Args:
-            entity_id (str): The entity ID of the lawn mower (e.g., "lawn_mower.front_yard")
-        """
-        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/start_mowing"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"start mowing {entity_id}")
+        """Start or resume the mowing task."""
+        self._call_service("lawn_mower", "start_mowing", entity_id)
 
     def dock_lawn_mower(self, entity_id):
-        """
-        Stop the lawn mower and return to dock.
-        
-        Args:
-            entity_id (str): The entity ID of the lawn mower
-        """
-        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/dock"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"dock {entity_id}")
+        """Stop the lawn mower and return to dock."""
+        self._call_service("lawn_mower", "dock", entity_id)
 
     def pause_lawn_mower(self, entity_id):
-        """
-        Pause the lawn mower during current operation.
-        
-        Args:
-            entity_id (str): The entity ID of the lawn mower
-        """
-        url = f"http://{self.ip_address}:{self.port}/api/services/lawn_mower/pause"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id
-        }
-        _post_method(url, headers, payload, f"pause {entity_id}")
+        """Pause the lawn mower during current operation."""
+        self._call_service("lawn_mower", "pause", entity_id)
