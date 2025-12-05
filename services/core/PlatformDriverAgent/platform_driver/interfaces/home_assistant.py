@@ -71,6 +71,7 @@ def _post_method(url, headers, data, operation_description):
         raise Exception(err)
 
 
+
 class Interface(BasicRevert, BaseInterface):
     def __init__(self, **kwargs):
         super(Interface, self).__init__(**kwargs)
@@ -178,6 +179,27 @@ class Interface(BasicRevert, BaseInterface):
                 error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
                 _log.error(error_msg)
                 raise ValueError(error_msg)
+
+        # Enable lock/unlock control via state attribute
+        elif "lock." in register.entity_id:
+            if entity_point == "state":
+                # Validate that value is 0 (unlock) or 1 (lock)
+                if isinstance(register.value, int) and register.value in [0, 1]:
+                    if register.value == 1:
+                        self.lock_device(register.entity_id)
+                    elif register.value == 0:
+                        self.unlock_device(register.entity_id)
+                else:
+                    error_msg = f"State value for {register.entity_id} should be an integer: " \
+                                f"0 (unlocked) or 1 (locked). Received: {register.value}"
+                    _log.error(error_msg)
+                    raise ValueError(error_msg)
+            else:
+                error_msg = f"Lock devices only support state control (lock/unlock). " \
+                            f"Cannot set '{entity_point}' attribute."
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+
         else:
             error_msg = f"Unsupported entity_id: {register.entity_id}. " \
                         f"Currently set_point is supported only for thermostats and lights"
@@ -251,6 +273,29 @@ class Interface(BasicRevert, BaseInterface):
                         attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
                         register.value = attribute
                         result[register.point_name] = attribute
+                
+                # handling lock states
+                elif "lock." in entity_id:
+                    if entity_point == "state":
+                        state = entity_data.get("state", None)
+                        # Converting lock states to numbers
+                        if state == "locked":
+                            register.value = 1
+                            result[register.point_name] = 1
+                        elif state == "unlocked":
+                            register.value = 0
+                            result[register.point_name] = 0
+                        else:
+                            # Handle transitional states (locking, unlocking, jammed, etc.)
+                            _log.warning(f"Lock {entity_id} is in transitional state: {state}")
+                            register.value = state
+                            result[register.point_name] = state
+                    else:
+                        # Handle other lock attributes if needed
+                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+                        register.value = attribute
+                        result[register.point_name] = attribute
+
                 else:  # handling all devices that are not thermostats or light states
                     if entity_point == "state":
 
@@ -405,3 +450,25 @@ class Interface(BasicRevert, BaseInterface):
             print(f"Successfully set {entity_id} to {state}")
         else:
             print(f"Failed to set {entity_id} to {state}: {response.text}")
+    
+    def lock_device(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/lock/lock"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"lock {entity_id}")
+
+    def unlock_device(self, entity_id):
+        url = f"http://{self.ip_address}:{self.port}/api/services/lock/unlock"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "entity_id": entity_id
+        }
+        _post_method(url, headers, payload, f"unlock {entity_id}")

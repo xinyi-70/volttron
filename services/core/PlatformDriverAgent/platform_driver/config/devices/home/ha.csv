@@ -1,0 +1,8 @@
+Point Name,Volttron Point Name,Units,Writable,Default Value,Notes
+fan_speed,fan_speed,,TRUE,,Fan speed control
+fan_state,fan_state,,TRUE,,Fan on/off
+
+switch_state,switch_state,,TRUE,,Switch on/off
+
+mower_state,mower_state,,TRUE,,Mower start/stop
+mower_mode,mower_mode,,TRUE,,Mower mode control
