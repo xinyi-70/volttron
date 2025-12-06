@@ -1,0 +1,3 @@
+Entity ID,Entity Point,Volttron Point Name,Units,Units Details,Writable,Starting Value,Type,Notes
+lawn_mower.front_yard,activity,front_yard_mower_activity,Enumeration,0: Docked 1: Mowing 2: Paused 3: Returning 4: Error,true,0,int,Front yard lawn mower activity control
+lawn_mower.back_yard,activity,back_yard_mower_activity,Enumeration,0: Docked 1: Mowing 2: Paused 3: Returning 4: Error,true,0,int,Back yard lawn mower activity control

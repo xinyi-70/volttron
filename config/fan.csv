@@ -1,0 +1,5 @@
+Entity ID,Entity Point,Volttron Point Name,Units,Units Details,Writable,Starting Value,Type,Notes
+fan.bedroom_fan,state,bedroom_fan_state,On/Off,0: Off 1: On,true,0,int,Bedroom fan on/off control
+fan.bedroom_fan,percentage,bedroom_fan_speed,Percent,0-100,true,50,int,Bedroom fan speed percentage
+fan.living_room_fan,state,living_room_fan_state,On/Off,0: Off 1: On,true,0,int,Living room fan on/off control
+fan.living_room_fan,percentage,living_room_fan_speed,Percent,0-100,true,30,int,Living room fan speed percentage

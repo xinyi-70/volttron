@@ -1,0 +1,3 @@
+Entity ID,Entity Point,Volttron Point Name,Units,Units Details,Writable,Starting Value,Type,Notes
+lock.front_door,state,front_door_lock_state,On/Off,0: Unlocked 1: Locked,true,0,int,Front door lock control
+lock.back_door,state,back_door_lock_state,On/Off,0: Unlocked 1: Locked,true,0,int,Back door lock control
