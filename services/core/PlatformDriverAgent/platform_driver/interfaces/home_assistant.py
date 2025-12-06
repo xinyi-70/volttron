@@ -42,10 +42,33 @@ type_mapping = {"string": str,
                 "bool": bool,
                 "boolean": bool}
 
+# Device state constants - eliminates magic numbers
+class DeviceState:
+    """Constants for device states"""
+    OFF = 0
+    ON = 1
+    UNLOCKED = 0
+    LOCKED = 1
+
+class ThermostatMode:
+    """Constants for thermostat modes"""
+    OFF = 0
+    HEAT = 2
+    COOL = 3
+    AUTO = 4
+
+class LawnMowerActivity:
+    """Constants for lawn mower activities"""
+    DOCKED = 0
+    MOWING = 1
+    PAUSED = 2
+    RETURNING = 3
+    ERROR = 4
 
 class HomeAssistantRegister(BaseRegister):
     def __init__(self, read_only, pointName, units, reg_type, attributes, entity_id, entity_point, default_value=None,
                  description=''):
+        """Register metadata for a Home Assistant entity point."""
         super(HomeAssistantRegister, self).__init__("byte", read_only, pointName, units, description='')
         self.reg_type = reg_type
         self.attributes = attributes
@@ -55,6 +78,7 @@ class HomeAssistantRegister(BaseRegister):
 
 
 def _post_method(url, headers, data, operation_description):
+    """POST helper that logs outcome and raises on failure."""
     err = None
     try:
         response = requests.post(url, headers=headers, json=data)
@@ -73,6 +97,7 @@ def _post_method(url, headers, data, operation_description):
 
 class Interface(BasicRevert, BaseInterface):
     def __init__(self, **kwargs):
+        """Initialize Home Assistant interface with connection placeholders."""
         super(Interface, self).__init__(**kwargs)
         self.point_name = None
         self.ip_address = None
@@ -81,6 +106,7 @@ class Interface(BasicRevert, BaseInterface):
         self.units = None
 
     def configure(self, config_dict, registry_config_str):
+        """Load connection details and parse registry config."""
         self.ip_address = config_dict.get("ip_address", None)
         self.access_token = config_dict.get("access_token", None)
         self.port = config_dict.get("port", None)
@@ -98,7 +124,40 @@ class Interface(BasicRevert, BaseInterface):
 
         self.parse_config(registry_config_str)
 
+    def _get_headers(self):
+        """
+        Get standard headers for Home Assistant API requests.
+        
+        Returns:
+            dict: Headers with authorization and content type
+        """
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def _call_service(self, domain, service, entity_id, extra_data=None):
+        """
+        Generic method to call Home Assistant services.
+        Eliminates code duplication across all device control methods.
+        
+        Args:
+            domain (str): Service domain (e.g., 'light', 'lock', 'fan')
+            service (str): Service name (e.g., 'turn_on', 'lock', 'set_percentage')
+            entity_id (str): The entity ID to control
+            extra_data (dict, optional): Additional data to include in payload
+        """
+        url = f"http://{self.ip_address}:{self.port}/api/services/{domain}/{service}"
+        headers = self._get_headers()
+        payload = {"entity_id": entity_id}
+        
+        if extra_data:
+            payload.update(extra_data)
+
+        _post_method(url, headers, payload, f"{service} {entity_id}")
+
     def get_point(self, point_name):
+        """Read a single point value from Home Assistant."""
         register = self.get_register_by_name(point_name)
 
         entity_data = self.get_entity_data(register.entity_id)
@@ -109,83 +168,288 @@ class Interface(BasicRevert, BaseInterface):
             value = entity_data.get("attributes", {}).get(f"{register.point_name}", 0)
             return value
 
+    def _handle_light(self, register):
+        """Handle light state and brightness writes."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                if register.value == DeviceState.ON:
+                    self.turn_on_lights(register.entity_id)
+                elif register.value == DeviceState.OFF:
+                    self.turn_off_lights(register.entity_id)
+            else:
+                error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
+                _log.info(error_msg)
+                raise ValueError(error_msg)
+        elif entity_point == "brightness":
+            if isinstance(register.value, int) and 0 <= register.value <= 255:
+                self.change_brightness(register.entity_id, register.value)
+            else:
+                error_msg = "Brightness value should be an integer between 0 and 255"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        else:
+            error_msg = f"Unexpected point_name {register.point_name} for register {register.entity_id}"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        return register.value
+
+    def _handle_input_boolean(self, register):
+        """Handle input_boolean state writes."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                if register.value == DeviceState.ON:
+                    self.set_input_boolean(register.entity_id, "on")
+                elif register.value == DeviceState.OFF:
+                    self.set_input_boolean(register.entity_id, "off")
+            else:
+                error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
+                _log.info(error_msg)
+                raise ValueError(error_msg)
+        else:
+            _log.info(f"Currently, input_booleans only support state")
+        return register.value
+
+    def _handle_climate(self, register):
+        """Handle thermostat mode and temperature writes."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            if isinstance(register.value, int) and register.value in [ThermostatMode.OFF, ThermostatMode.HEAT,
+                                                                      ThermostatMode.COOL, ThermostatMode.AUTO]:
+                if register.value == ThermostatMode.OFF:
+                    self.change_thermostat_mode(entity_id=register.entity_id, mode="off")
+                elif register.value == ThermostatMode.HEAT:
+                    self.change_thermostat_mode(entity_id=register.entity_id, mode="heat")
+                elif register.value == ThermostatMode.COOL:
+                    self.change_thermostat_mode(entity_id=register.entity_id, mode="cool")
+                elif register.value == ThermostatMode.AUTO:
+                    self.change_thermostat_mode(entity_id=register.entity_id, mode="auto")
+            else:
+                error_msg = f"Climate state should be an integer value of 0, 2, 3, or 4"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        elif entity_point == "temperature":
+            self.set_thermostat_temperature(entity_id=register.entity_id, temperature=register.value)
+        else:
+            error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        return register.value
+
+    def _handle_lock(self, register):
+        """Handle lock/unlock writes."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            if isinstance(register.value, int) and register.value in [DeviceState.UNLOCKED, DeviceState.LOCKED]:
+                if register.value == DeviceState.LOCKED:
+                    self.lock_device(register.entity_id)
+                elif register.value == DeviceState.UNLOCKED:
+                    self.unlock_device(register.entity_id)
+            else:
+                error_msg = f"State value for {register.entity_id} should be an integer: " \
+                            f"0 (unlocked) or 1 (locked). Received: {register.value}"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        else:
+            error_msg = f"Lock devices only support state control (lock/unlock). " \
+                        f"Cannot set '{entity_point}' attribute."
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        return register.value
+
+    def _handle_fan(self, register):
+        """Handle fan on/off and speed writes."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            if isinstance(register.value, int) and register.value in [DeviceState.OFF, DeviceState.ON]:
+                if register.value == DeviceState.ON:
+                    self.turn_on_fan(register.entity_id)
+                elif register.value == DeviceState.OFF:
+                    self.turn_off_fan(register.entity_id)
+            else:
+                error_msg = f"State value for {register.entity_id} should be 0 (off) or 1 (on)"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        elif entity_point == "percentage":
+            if isinstance(register.value, (int, float)) and 0 <= register.value <= 100:
+                self.set_fan_percentage(register.entity_id, int(register.value))
+            else:
+                error_msg = f"Percentage value for {register.entity_id} should be between 0-100"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        else:
+            error_msg = f"Fan devices support 'state' and 'percentage' attributes only"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        return register.value
+
+    def _handle_lawn_mower(self, register):
+        """Handle lawn mower activity writes."""
+        entity_point = register.entity_point
+        if entity_point == "activity":
+            valid_activities = [LawnMowerActivity.DOCKED, LawnMowerActivity.MOWING,
+                                LawnMowerActivity.PAUSED, LawnMowerActivity.RETURNING]
+            if isinstance(register.value, int) and register.value in valid_activities:
+                if register.value == LawnMowerActivity.MOWING:
+                    self.start_mowing(register.entity_id)
+                elif register.value == LawnMowerActivity.DOCKED:
+                    self.dock_lawn_mower(register.entity_id)
+                elif register.value == LawnMowerActivity.PAUSED:
+                    self.pause_lawn_mower(register.entity_id)
+                elif register.value == LawnMowerActivity.RETURNING:
+                    self.dock_lawn_mower(register.entity_id)
+            else:
+                error_msg = f"Activity value for {register.entity_id} should be " \
+                            f"{LawnMowerActivity.DOCKED} (dock), {LawnMowerActivity.MOWING} (mowing), " \
+                            f"{LawnMowerActivity.PAUSED} (pause), or {LawnMowerActivity.RETURNING} (return)"
+                _log.error(error_msg)
+                raise ValueError(error_msg)
+        else:
+            error_msg = f"Lawn mower devices currently support 'activity' attribute only"
+            _log.error(error_msg)
+            raise ValueError(error_msg)
+        return register.value
+
     def _set_point(self, point_name, value):
+        """Validate inputs then route write calls to the correct device handler."""
         register = self.get_register_by_name(point_name)
         if register.read_only:
             raise IOError(
                 "Trying to write to a point configured read only: " + point_name)
         register.value = register.reg_type(value)  # setting the value
-        entity_point = register.entity_point
-        # Changing lights values in home assistant based off of register value.
-        if "light." in register.entity_id:
-            if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
-                        self.turn_on_lights(register.entity_id)
-                    elif register.value == 0:
-                        self.turn_off_lights(register.entity_id)
-                else:
-                    error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
-                    _log.info(error_msg)
-                    raise ValueError(error_msg)
+        entity_id = register.entity_id
 
-            elif entity_point == "brightness":
-                if isinstance(register.value, int) and 0 <= register.value <= 255:  # Make sure its int and within range
-                    self.change_brightness(register.entity_id, register.value)
-                else:
-                    error_msg = "Brightness value should be an integer between 0 and 255"
-                    _log.error(error_msg)
-                    raise ValueError(error_msg)
-            else:
-                error_msg = f"Unexpected point_name {point_name} for register {register.entity_id}"
-                _log.error(error_msg)
-                raise ValueError(error_msg)
-
-        elif "input_boolean." in register.entity_id:
-            if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 1]:
-                    if register.value == 1:
-                        self.set_input_boolean(register.entity_id, "on")
-                    elif register.value == 0:
-                        self.set_input_boolean(register.entity_id, "off")
-                else:
-                    error_msg = f"State value for {register.entity_id} should be an integer value of 1 or 0"
-                    _log.info(error_msg)
-                    raise ValueError(error_msg)
-            else:
-                _log.info(f"Currently, input_booleans only support state")
-
-        # Changing thermostat values.
-        elif "climate." in register.entity_id:
-            if entity_point == "state":
-                if isinstance(register.value, int) and register.value in [0, 2, 3, 4]:
-                    if register.value == 0:
-                        self.change_thermostat_mode(entity_id=register.entity_id, mode="off")
-                    elif register.value == 2:
-                        self.change_thermostat_mode(entity_id=register.entity_id, mode="heat")
-                    elif register.value == 3:
-                        self.change_thermostat_mode(entity_id=register.entity_id, mode="cool")
-                    elif register.value == 4:
-                        self.change_thermostat_mode(entity_id=register.entity_id, mode="auto")
-                else:
-                    error_msg = f"Climate state should be an integer value of 0, 2, 3, or 4"
-                    _log.error(error_msg)
-                    raise ValueError(error_msg)
-            elif entity_point == "temperature":
-                self.set_thermostat_temperature(entity_id=register.entity_id, temperature=register.value)
-
-            else:
-                error_msg = f"Currently set_point is supported only for thermostats state and temperature {register.entity_id}"
-                _log.error(error_msg)
-                raise ValueError(error_msg)
+        if "light." in entity_id:
+            return self._handle_light(register)
+        elif "input_boolean." in entity_id:
+            return self._handle_input_boolean(register)
+        elif "climate." in entity_id:
+            return self._handle_climate(register)
+        elif "lock." in entity_id:
+            return self._handle_lock(register)
+        elif "fan." in entity_id:
+            return self._handle_fan(register)
+        elif "lawn_mower." in entity_id:
+            return self._handle_lawn_mower(register)
         else:
             error_msg = f"Unsupported entity_id: {register.entity_id}. " \
-                        f"Currently set_point is supported only for thermostats and lights"
+                        f"Currently set_point is supported only for thermostats, lights, locks, fans, and lawn mowers"
             _log.error(error_msg)
             raise ValueError(error_msg)
-        return register.value
+
+    def _scrape_climate(self, register, entity_data):
+        """Map thermostat state/attributes from Home Assistant response."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            state = entity_data.get("state", None)
+            state_map = {
+                "off": ThermostatMode.OFF,
+                "heat": ThermostatMode.HEAT,
+                "cool": ThermostatMode.COOL,
+                "auto": ThermostatMode.AUTO
+            }
+            if state in state_map:
+                value = state_map[state]
+            else:
+                _log.error(f"State {state} from {register.entity_id} is not yet supported")
+                value = state
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
+
+    def _scrape_light(self, register, entity_data):
+        """Map light state/attributes from Home Assistant response."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            state = entity_data.get("state", None)
+            state_map = {"on": DeviceState.ON, "off": DeviceState.OFF}
+            if state in state_map:
+                value = state_map[state]
+            else:
+                _log.warning(f"Unknown light state '{state}' for {register.entity_id}")
+                value = state
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
+
+    def _scrape_input_boolean(self, register, entity_data):
+        """Map input_boolean state/attributes (same semantics as lights)."""
+        # input_boolean shares the same on/off state semantics as lights
+        return self._scrape_light(register, entity_data)
+
+    def _scrape_lock(self, register, entity_data):
+        """Map lock state/attributes from Home Assistant response."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            state = entity_data.get("state", None)
+            state_map = {"locked": DeviceState.LOCKED, "unlocked": DeviceState.UNLOCKED}
+            if state in state_map:
+                value = state_map[state]
+            else:
+                _log.warning(f"Lock {register.entity_id} is in transitional state: {state}")
+                value = state
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
+
+    def _scrape_fan(self, register, entity_data):
+        """Map fan state/percentage from Home Assistant response."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            state = entity_data.get("state", None)
+            state_map = {"on": DeviceState.ON, "off": DeviceState.OFF}
+            if state in state_map:
+                value = state_map[state]
+            else:
+                _log.warning(f"Unknown fan state '{state}' for {register.entity_id}")
+                value = state
+        elif entity_point == "percentage":
+            value = entity_data.get("attributes", {}).get("percentage", 0)
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
+
+    def _scrape_lawn_mower(self, register, entity_data):
+        """Map lawn mower activity/attributes from Home Assistant response."""
+        entity_point = register.entity_point
+        if entity_point == "activity":
+            activity = entity_data.get("state", None)
+            activity_map = {
+                "docked": LawnMowerActivity.DOCKED,
+                "mowing": LawnMowerActivity.MOWING,
+                "paused": LawnMowerActivity.PAUSED,
+                "returning": LawnMowerActivity.RETURNING,
+                "error": LawnMowerActivity.ERROR
+            }
+            if activity in activity_map:
+                value = activity_map[activity]
+                if activity == "error":
+                    _log.error(f"Lawn mower {register.entity_id} is in error state")
+            else:
+                _log.warning(f"Unknown lawn mower activity '{activity}' for {register.entity_id}")
+                value = activity
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
+
+    def _scrape_default(self, register, entity_data):
+        """Fallback scraper for unsupported device types."""
+        entity_point = register.entity_point
+        if entity_point == "state":
+            value = entity_data.get("state", None)
+        else:
+            value = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
+        register.value = value
+        return value
 
     def get_entity_data(self, point_name):
+        """Fetch raw state and attributes for a specific entity from Home Assistant."""
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -202,72 +466,39 @@ class Interface(BasicRevert, BaseInterface):
             raise Exception(error_msg)
 
     def _scrape_all(self):
+        """Scrape all configured registers and return their latest values."""
         result = {}
         read_registers = self.get_registers_by_type("byte", True)
         write_registers = self.get_registers_by_type("byte", False)
 
         for register in read_registers + write_registers:
             entity_id = register.entity_id
-            entity_point = register.entity_point
             try:
                 entity_data = self.get_entity_data(entity_id)  # Using Entity ID to get data
-                if "climate." in entity_id:  # handling thermostats.
-                    if entity_point == "state":
-                        state = entity_data.get("state", None)
-                        # Giving thermostat states an equivalent number.
-                        if state == "off":
-                            register.value = 0
-                            result[register.point_name] = 0
-                        elif state == "heat":
-                            register.value = 2
-                            result[register.point_name] = 2
-                        elif state == "cool":
-                            register.value = 3
-                            result[register.point_name] = 3
-                        elif state == "auto":
-                            register.value = 4
-                            result[register.point_name] = 4
-                        else:
-                            error_msg = f"State {state} from {entity_id} is not yet supported"
-                            _log.error(error_msg)
-                            ValueError(error_msg)
-                    # Assigning attributes
-                    else:
-                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
-                        register.value = attribute
-                        result[register.point_name] = attribute
-                # handling light states
-                elif "light." or "input_boolean." in entity_id: # Checks for lights or input bools since they have the same states.
-                    if entity_point == "state":
-                        state = entity_data.get("state", None)
-                        # Converting light states to numbers.
-                        if state == "on":
-                            register.value = 1
-                            result[register.point_name] = 1
-                        elif state == "off":
-                            register.value = 0
-                            result[register.point_name] = 0
-                    else:
-                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
-                        register.value = attribute
-                        result[register.point_name] = attribute
-                else:  # handling all devices that are not thermostats or light states
-                    if entity_point == "state":
-
-                        state = entity_data.get("state", None)
-                        register.value = state
-                        result[register.point_name] = state
-                    # Assigning attributes
-                    else:
-                        attribute = entity_data.get("attributes", {}).get(f"{entity_point}", 0)
-                        register.value = attribute
-                        result[register.point_name] = attribute
+                handlers = (
+                    ("climate.", self._scrape_climate),
+                    ("light.", self._scrape_light),
+                    ("input_boolean.", self._scrape_input_boolean),
+                    ("lock.", self._scrape_lock),
+                    ("fan.", self._scrape_fan),
+                    ("lawn_mower.", self._scrape_lawn_mower),
+                )
+                handled = False
+                for prefix, handler in handlers:
+                    if entity_id.startswith(prefix):
+                        value = handler(register, entity_data)
+                        handled = True
+                        break
+                if not handled:
+                    value = self._scrape_default(register, entity_data)
+                result[register.point_name] = value
             except Exception as e:
                 _log.error(f"An unexpected error occurred for entity_id: {entity_id}: {e}")
 
         return result
 
     def parse_config(self, config_dict):
+        """Parse driver registry rows into HomeAssistantRegister objects."""
 
         if config_dict is None:
             return
@@ -305,103 +536,70 @@ class Interface(BasicRevert, BaseInterface):
             self.insert_register(register)
 
     def turn_off_lights(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_off"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "entity_id": entity_id,
-        }
-        _post_method(url, headers, payload, f"turn off {entity_id}")
+        """Turn off the specified light."""
+        self._call_service("light", "turn_off", entity_id)
 
     def turn_on_lights(self, entity_id):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
-        }
-
-        payload = {
-            "entity_id": f"{entity_id}"
-        }
-        _post_method(url, headers, payload, f"turn on {entity_id}")
-
-    def change_thermostat_mode(self, entity_id, mode):
-        # Check if enttiy_id startswith climate.
-        if not entity_id.startswith("climate."):
-            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
-            return
-        # Build header
-        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_hvac_mode"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "content-type": "application/json",
-        }
-        # Build data
-        data = {
-            "entity_id": entity_id,
-            "hvac_mode": mode,
-        }
-        # Post data
-        _post_method(url, headers, data, f"change mode of {entity_id} to {mode}")
-
-    def set_thermostat_temperature(self, entity_id, temperature):
-        # Check if the provided entity_id starts with "climate."
-        if not entity_id.startswith("climate."):
-            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
-            return
-
-        url = f"http://{self.ip_address}:{self.port}/api/services/climate/set_temperature"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "content-type": "application/json",
-        }
-
-        if self.units == "C":
-            converted_temp = round((temperature - 32) * 5/9, 1)
-            _log.info(f"Converted temperature {converted_temp}")
-            data = {
-                "entity_id": entity_id,
-                "temperature": converted_temp,
-            }
-        else:
-            data = {
-                "entity_id": entity_id,
-                "temperature": temperature,
-            }
-        _post_method(url, headers, data, f"set temperature of {entity_id} to {temperature}")
+        """Turn on the specified light."""
+        self._call_service("light", "turn_on", entity_id)
 
     def change_brightness(self, entity_id, value):
-        url = f"http://{self.ip_address}:{self.port}/api/services/light/turn_on"
-        headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
-        }
-        # ranges from 0 - 255
-        payload = {
-            "entity_id": f"{entity_id}",
-            "brightness": value,
-        }
+        """Change brightness of the light (0-255)."""
+        self._call_service("light", "turn_on", entity_id, {"brightness": value})
 
-        _post_method(url, headers, payload, f"set brightness of {entity_id} to {value}")
+    def change_thermostat_mode(self, entity_id, mode):
+        """Change thermostat HVAC mode."""
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+        self._call_service("climate", "set_hvac_mode", entity_id, {"hvac_mode": mode})
+
+    def set_thermostat_temperature(self, entity_id, temperature):
+        """Set thermostat temperature."""
+        if not entity_id.startswith("climate."):
+            _log.error(f"{entity_id} is not a valid thermostat entity ID.")
+            return
+        
+        # Convert temperature if needed
+        if self.units == "C":
+            temperature = round((temperature - 32) * 5/9, 1)
+            _log.info(f"Converted temperature to {temperature}C")
+        
+        self._call_service("climate", "set_temperature", entity_id, {"temperature": temperature})
 
     def set_input_boolean(self, entity_id, state):
+        """Set input boolean state."""
         service = 'turn_on' if state == 'on' else 'turn_off'
-        url = f"http://{self.ip_address}:{self.port}/api/services/input_boolean/{service}"
-        headers = {
-            "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
-        }
+        self._call_service("input_boolean", service, entity_id)
+    
+    def lock_device(self, entity_id):
+        """Lock the specified lock device."""
+        self._call_service("lock", "lock", entity_id)
 
-        payload = {
-            "entity_id": entity_id
-        }
+    def unlock_device(self, entity_id):
+        """Unlock the specified lock device."""
+        self._call_service("lock", "unlock", entity_id)
 
-        response = requests.post(url, headers=headers, json=payload)
+    def turn_on_fan(self, entity_id):
+        """Turn on the specified fan device."""
+        self._call_service("fan", "turn_on", entity_id)
 
-        # Optionally check for a successful response
-        if response.status_code == 200:
-            print(f"Successfully set {entity_id} to {state}")
-        else:
-            print(f"Failed to set {entity_id} to {state}: {response.text}")
+    def turn_off_fan(self, entity_id):
+        """Turn off the specified fan device."""
+        self._call_service("fan", "turn_off", entity_id)
+
+    def set_fan_percentage(self, entity_id, percentage):
+        """Set the speed percentage of the fan (0-100%)."""
+        self._call_service("fan", "set_percentage", entity_id, {"percentage": percentage})
+
+    def start_mowing(self, entity_id):
+        """Start or resume the mowing task."""
+        self._call_service("lawn_mower", "start_mowing", entity_id)
+
+    def dock_lawn_mower(self, entity_id):
+        """Stop the lawn mower and return to dock."""
+        self._call_service("lawn_mower", "dock", entity_id)
+
+    def pause_lawn_mower(self, entity_id):
+        """Pause the lawn mower during current operation."""
+        self._call_service("lawn_mower", "pause", entity_id)
