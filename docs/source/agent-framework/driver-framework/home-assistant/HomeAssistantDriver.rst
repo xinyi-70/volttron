@@ -4,8 +4,7 @@ Home Assistant Driver
 =====================
 
 The Home Assistant driver enables VOLTTRON to read any data point from any Home Assistant controlled device.
-Currently control(write access) is supported only for lights(state and brightness) and thermostats(state and temperature).
-
+Currently control(write access) is supported for lights (state and brightness), thermostats (state and temperature), locks (state), fans (state and percentage), and lawn mowers (activity).
 The following diagram shows interaction between platform driver agent and home assistant driver.
 
 .. mermaid::
@@ -175,6 +174,82 @@ Upon completion, initiate the platform driver. Utilize the listener agent to ver
    [{'light_brightness': 254, 'state': 'on'},
     {'light_brightness': {'type': 'integer', 'tz': 'UTC', 'units': 'int'},
      'state': {'type': 'integer', 'tz': 'UTC', 'units': 'On / Off'}}]
+
+Example Lock Registry
+**********************
+
+For locks, the state is converted into numbers as follows: "0: Unlocked, 1: Locked".
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "lock.front_door",
+           "Entity Point": "state",
+           "Volttron Point Name": "lock_state",
+           "Units": "Enumeration",
+           "Units Details": "0: Unlocked, 1: Locked",
+           "Writable": true,
+           "Starting Value": 1,
+           "Type": "int",
+           "Notes": "Lock state control"
+       }
+   ]
+
+
+Example Fan Registry
+********************
+
+For fans, the state is converted into numbers as follows: "0: Off, 1: On". Fan speed can be controlled using the percentage attribute (0-100).
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "fan.bedroom_fan",
+           "Entity Point": "state",
+           "Volttron Point Name": "fan_state",
+           "Units": "Enumeration",
+           "Units Details": "0: Off, 1: On",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Fan on/off control"
+       },
+       {
+           "Entity ID": "fan.bedroom_fan",
+           "Entity Point": "percentage",
+           "Volttron Point Name": "fan_speed",
+           "Units": "Percent",
+           "Units Details": "Fan speed percentage, 0-100",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Fan speed control"
+       }
+   ]
+
+
+Example Lawn Mower Registry
+****************************
+
+For lawn mowers, the activity state is converted into numbers as follows: "0: Docked, 1: Mowing, 2: Paused, 3: Returning, 4: Error".
+
+.. code-block:: json
+
+   [
+       {
+           "Entity ID": "lawn_mower.robot_mower",
+           "Entity Point": "activity",
+           "Volttron Point Name": "mower_activity",
+           "Units": "Enumeration",
+           "Units Details": "0: Docked, 1: Mowing, 2: Paused, 3: Returning, 4: Error",
+           "Writable": true,
+           "Starting Value": 0,
+           "Type": "int",
+           "Notes": "Lawn mower activity control"
+       }
+   ]
 
 Running Tests
 +++++++++++++++++++++++
